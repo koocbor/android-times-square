@@ -1,6 +1,41 @@
 Change Log
 ==========
 
+Version 1.7.9 *(2018-04-26)*
+----------------------------
+
+ * New: custom cells (using a DayViewAdapter) can now have taller contents than the default 1x1 cell.
+
+Version 1.7.7 *(2017-12-08)*
+----------------------------
+
+ * Improved: `tsquare_displayAlwaysDigitNumbers` now also applies to the year in Burmese/Arabic
+
+Version 1.7.6 *(2017-12-04)*
+----------------------------
+
+ * Improved: better month name formatting for Chinese/Japenese.
+ * New: `tsquare_displayAlwaysDigitNumbers` to override the locale setting and show digits on day cells.
+
+
+Version 1.7.5 *(2017-10-12)*
+----------------------------
+
+ * New: `tsquare_titleTextStyle` allows full styling of the month title view
+ * Removed: `tsquare_titleTextColor` (use `tsquare_titleTextStyle` instead)
+
+Version 1.7.4 *(2017-10-03)*
+----------------------------
+
+ * New: `tsquare_displayDayNamesHeaderRow` allows hiding the day names header row
+
+Version 1.7.3 *(2017-05-03)*
+----------------------------
+
+ * New: withMonthsReverseOrder for reversing the order of months
+ * New: RangeState is now accessible so getRangeState actually works
+ * New language: Esperanto
+
 Version 1.7.2 *(2017-04-06)*
 ----------------------------
 

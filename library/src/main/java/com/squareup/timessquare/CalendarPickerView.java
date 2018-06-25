@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.graphics.Typeface;
+import android.text.format.DateUtils;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -13,15 +14,16 @@ import android.view.ViewGroup;
 import android.widget.BaseAdapter;
 import android.widget.ListView;
 import android.widget.Toast;
-import com.squareup.timessquare.MonthCellDescriptor.RangeState;
 import java.text.DateFormat;
 import java.text.DateFormatSymbols;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
+import java.util.Formatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
@@ -61,6 +63,10 @@ public class CalendarPickerView extends ListView {
     RANGE
   }
 
+  // List of languages that require manually creation of YYYY MMMM date format
+  private static final ArrayList<String> explicitlyNumericYearLocaleLanguages =
+      new ArrayList<>(Arrays.asList("ar", "my"));
+
   private final CalendarPickerView.MonthAdapter adapter;
   private final IndexedLinkedHashMap<String, List<List<MonthCellDescriptor>>> cells =
       new IndexedLinkedHashMap<>();
@@ -72,7 +78,6 @@ public class CalendarPickerView extends ListView {
   final List<Calendar> highlightedCals = new ArrayList<>();
   private Locale locale;
   private TimeZone timeZone;
-  private DateFormat monthNameFormat;
   private DateFormat weekdayNameFormat;
   private DateFormat fullDateFormat;
   private Calendar minCal;
@@ -84,9 +89,11 @@ public class CalendarPickerView extends ListView {
   private int dividerColor;
   private int dayBackgroundResId;
   private int dayTextColorResId;
-  private int titleTextColor;
+  private int titleTextStyle;
   private boolean displayHeader;
   private int headerTextColor;
+  private boolean displayDayNamesHeaderRow;
+  private boolean displayAlwaysDigitNumbers;
   private Typeface titleTypeface;
   private Typeface dateTypeface;
 
@@ -97,6 +104,11 @@ public class CalendarPickerView extends ListView {
   private CellClickInterceptor cellClickInterceptor;
   private List<CalendarCellDecorator> decorators;
   private DayViewAdapter dayViewAdapter = new DefaultDayViewAdapter();
+
+  private boolean monthsReverseOrder;
+
+  private final StringBuilder monthBuilder = new StringBuilder(50);
+  private Formatter monthFormatter;
 
   public void setDecorators(List<CalendarCellDecorator> decorators) {
     this.decorators = decorators;
@@ -122,11 +134,15 @@ public class CalendarPickerView extends ListView {
         R.drawable.calendar_bg_selector);
     dayTextColorResId = a.getResourceId(R.styleable.CalendarPickerView_tsquare_dayTextColor,
         R.color.calendar_text_selector);
-    titleTextColor = a.getColor(R.styleable.CalendarPickerView_tsquare_titleTextColor,
-        res.getColor(R.color.calendar_text_active));
+    titleTextStyle = a.getResourceId(R.styleable.CalendarPickerView_tsquare_titleTextStyle,
+        R.style.CalendarTitle);
     displayHeader = a.getBoolean(R.styleable.CalendarPickerView_tsquare_displayHeader, true);
     headerTextColor = a.getColor(R.styleable.CalendarPickerView_tsquare_headerTextColor,
         res.getColor(R.color.calendar_text_active));
+    displayDayNamesHeaderRow =
+            a.getBoolean(R.styleable.CalendarPickerView_tsquare_displayDayNamesHeaderRow, true);
+    displayAlwaysDigitNumbers =
+            a.getBoolean(R.styleable.CalendarPickerView_tsquare_displayAlwaysDigitNumbers, false);
     a.recycle();
 
     adapter = new MonthAdapter();
@@ -140,8 +156,6 @@ public class CalendarPickerView extends ListView {
     minCal = Calendar.getInstance(timeZone, locale);
     maxCal = Calendar.getInstance(timeZone, locale);
     monthCounter = Calendar.getInstance(timeZone, locale);
-    monthNameFormat = new SimpleDateFormat(context.getString(R.string.month_name_format), locale);
-    monthNameFormat.setTimeZone(timeZone);
     weekdayNameFormat = new SimpleDateFormat(context.getString(R.string.day_name_format), locale);
     weekdayNameFormat.setTimeZone(timeZone);
     fullDateFormat = DateFormat.getDateInstance(DateFormat.MEDIUM, locale);
@@ -196,17 +210,15 @@ public class CalendarPickerView extends ListView {
     minCal = Calendar.getInstance(timeZone, locale);
     maxCal = Calendar.getInstance(timeZone, locale);
     monthCounter = Calendar.getInstance(timeZone, locale);
-    monthNameFormat =
-        new SimpleDateFormat(getContext().getString(R.string.month_name_format), locale);
-    monthNameFormat.setTimeZone(timeZone);
     for (MonthDescriptor month : months) {
-      month.setLabel(monthNameFormat.format(month.getDate()));
+      month.setLabel(formatMonthDate(month.getDate()));
     }
     weekdayNameFormat =
         new SimpleDateFormat(getContext().getString(R.string.day_name_format), locale);
     weekdayNameFormat.setTimeZone(timeZone);
     fullDateFormat = DateFormat.getDateInstance(DateFormat.MEDIUM, locale);
     fullDateFormat.setTimeZone(timeZone);
+    monthFormatter = new Formatter(monthBuilder, locale);
 
     this.selectionMode = SelectionMode.SINGLE;
     // Clear out any previously-selected dates/cells.
@@ -237,8 +249,8 @@ public class CalendarPickerView extends ListView {
         && monthCounter.get(YEAR) < maxYear + 1) { // But not > next yr.
       Date date = monthCounter.getTime();
       MonthDescriptor month =
-          new MonthDescriptor(monthCounter.get(MONTH), monthCounter.get(YEAR), date,
-              monthNameFormat.format(date));
+          new MonthDescriptor(monthCounter.get(MONTH), monthCounter.get(YEAR),
+                  date, formatMonthDate(date));
       cells.put(monthKey(month), getMonthCells(month, monthCounter));
       Logr.d("Adding month %s", month);
       months.add(month);
@@ -384,6 +396,11 @@ public class CalendarPickerView extends ListView {
 
     public FluentInitializer displayOnly() {
       displayOnly = true;
+      return this;
+    }
+
+    public FluentInitializer withMonthsReverseOrder(boolean monthsRevOrder) {
+      monthsReverseOrder = monthsRevOrder;
       return this;
     }
   }
@@ -612,6 +629,52 @@ public class CalendarPickerView extends ListView {
     return wasSelected;
   }
 
+  /**
+   * Use {@link DateUtils} to format the dates.
+   *
+   * @see DateUtils
+   */
+  private String formatMonthDate(Date date) {
+    int flags = DateUtils.FORMAT_SHOW_DATE | DateUtils.FORMAT_SHOW_YEAR
+            | DateUtils.FORMAT_NO_MONTH_DAY;
+
+    // Save default Locale
+    Locale defaultLocale = Locale.getDefault();
+
+    // Set new default Locale, the reason to do that is DateUtils.formatDateTime uses
+    // internally this method DateIntervalFormat.formatDateRange to format the date. And this
+    // method uses the default locale.
+    //
+    // More details about the methods:
+    // - DateUtils.formatDateTime: https://goo.gl/3YW52Q
+    // - DateIntervalFormat.formatDateRange: https://goo.gl/RRmfK7
+    Locale.setDefault(locale);
+
+    String dateFormatted;
+    if (displayAlwaysDigitNumbers
+      && explicitlyNumericYearLocaleLanguages.contains(locale.getLanguage())) {
+      StringBuilder sb = new StringBuilder();
+      SimpleDateFormat sdfMonth = new SimpleDateFormat(getContext()
+        .getString(R.string.month_only_name_format), locale);
+      SimpleDateFormat sdfYear = new SimpleDateFormat(getContext()
+        .getString(R.string.year_only_format), Locale.ENGLISH);
+      dateFormatted = sb.append(sdfMonth.format(date.getTime())).append(" ")
+        .append(sdfYear.format(date.getTime())).toString();
+    } else {
+      // Format date using the new Locale
+      dateFormatted = DateUtils.formatDateRange(getContext(), monthFormatter,
+        date.getTime(), date.getTime(), flags, timeZone.getID()).toString();
+    }
+    // Call setLength(0) on StringBuilder passed to the Formatter constructor to not accumulate
+    // the results
+    monthBuilder.setLength(0);
+
+    // Restore default Locale to avoid generating any side effects
+    Locale.setDefault(defaultLocale);
+
+    return dateFormatted;
+  }
+
   private void validateDate(Date date) {
     if (date == null) {
       throw new IllegalArgumentException("Selected date must be non-null.");
@@ -669,8 +732,8 @@ public class CalendarPickerView extends ListView {
         // Select all days in between start and end.
         Date start = selectedCells.get(0).getDate();
         Date end = selectedCells.get(1).getDate();
-        selectedCells.get(0).setRangeState(MonthCellDescriptor.RangeState.FIRST);
-        selectedCells.get(1).setRangeState(MonthCellDescriptor.RangeState.LAST);
+        selectedCells.get(0).setRangeState(RangeState.FIRST);
+        selectedCells.get(1).setRangeState(RangeState.LAST);
 
         int startMonthIndex = cells.getIndexOfKey(monthKey(selectedCals.get(0)));
         int endMonthIndex = cells.getIndexOfKey(monthKey(selectedCals.get(1)));
@@ -682,7 +745,7 @@ public class CalendarPickerView extends ListView {
                   && singleCell.getDate().before(end)
                   && singleCell.isSelectable()) {
                 singleCell.setSelected(true);
-                singleCell.setRangeState(MonthCellDescriptor.RangeState.MIDDLE);
+                singleCell.setRangeState(RangeState.MIDDLE);
                 selectedCells.add(singleCell);
               }
             }
@@ -785,10 +848,10 @@ public class CalendarPickerView extends ListView {
 
   /** Hold a cell with a month-index. */
   private static class MonthCellWithMonthIndex {
-    public MonthCellDescriptor cell;
-    public int monthIndex;
+    MonthCellDescriptor cell;
+    int monthIndex;
 
-    public MonthCellWithMonthIndex(MonthCellDescriptor cell, int monthIndex) {
+    MonthCellWithMonthIndex(MonthCellDescriptor cell, int monthIndex) {
       this.cell = cell;
       this.monthIndex = monthIndex;
     }
@@ -844,11 +907,15 @@ public class CalendarPickerView extends ListView {
           || !monthView.getTag(R.id.day_view_adapter_class).equals(dayViewAdapter.getClass())) {
         monthView =
             MonthView.create(parent, inflater, weekdayNameFormat, listener, today, dividerColor,
-                dayBackgroundResId, dayTextColorResId, titleTextColor, displayHeader,
-                headerTextColor, decorators, locale, dayViewAdapter);
+                dayBackgroundResId, dayTextColorResId, titleTextStyle, displayHeader,
+                headerTextColor, displayDayNamesHeaderRow, displayAlwaysDigitNumbers,
+                decorators, locale, dayViewAdapter);
         monthView.setTag(R.id.day_view_adapter_class, dayViewAdapter.getClass());
       } else {
         monthView.setDecorators(decorators);
+      }
+      if (monthsReverseOrder) {
+        position = months.size() - position - 1;
       }
       monthView.init(months.get(position), cells.getValueAtIndex(position), displayOnly,
           titleTypeface, dateTypeface);
@@ -886,14 +953,14 @@ public class CalendarPickerView extends ListView {
         boolean isHighlighted = containsDate(highlightedCals, cal);
         int value = cal.get(DAY_OF_MONTH);
 
-        MonthCellDescriptor.RangeState rangeState = MonthCellDescriptor.RangeState.NONE;
+        RangeState rangeState = RangeState.NONE;
         if (selectedCals.size() > 1) {
           if (sameDate(minSelectedCal, cal)) {
-            rangeState = MonthCellDescriptor.RangeState.FIRST;
+            rangeState = RangeState.FIRST;
           } else if (sameDate(maxDate(selectedCals), cal)) {
-            rangeState = MonthCellDescriptor.RangeState.LAST;
+            rangeState = RangeState.LAST;
           } else if (betweenDates(cal, minSelectedCal, maxSelectedCal)) {
-            rangeState = MonthCellDescriptor.RangeState.MIDDLE;
+            rangeState = RangeState.MIDDLE;
           }
         }
 
